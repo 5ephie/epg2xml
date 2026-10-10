@@ -1,0 +1,56 @@
+name: Update EPG XMLTV
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # every 6 hours (GitHub cron runs in UTC)
+  workflow_dispatch:          # allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate XMLTV (next 7 days, zyepg full 66 channels)
+        env:
+          ENDPOINT: 'zyepg'
+          COLUMN_ID: '101,102,103'
+        run: |
+          # Next 7 days of program guide from today (no lookback);
+          # zyepg 101/102/103 = BS / CS / terrestrial full channel directory
+          python3 epg2xmltv.py --endpoint "$ENDPOINT" --column-id "$COLUMN_ID" --days 7 --tz 9 -o epg.xml
+          # Also produce a gzip copy (lighter for players; TiviMate/TVHeadend both support it)
+          gzip -9 -k -f epg.xml
+          echo "channels=$(grep -c '<channel id=' epg.xml) programmes=$(grep -c '<programme ' epg.xml)"
+          echo "xml=$(du -h epg.xml | cut -f1)  gz=$(du -h epg.xml.gz | cut -f1)"
+
+      - name: Publish epg.xml(.gz) to data branch (force, single commit)
+        run: |
+          cd "$RUNNER_TEMP"
+          git init -q
+          git checkout -q -b data
+          cp "$GITHUB_WORKSPACE/epg.xml" "$GITHUB_WORKSPACE/epg.xml.gz" .
+          git add epg.xml epg.xml.gz
+          git -c user.email="github-actions[bot]@users.noreply.github.com" \
+              -c user.name="github-actions[bot]" \
+              commit -qm "epg $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
+
+      - name: Summary
+        run: |
+          {
+            echo "### EPG update complete"
+            echo "- Time: \`$(date -u +%FT%TZ)\` (UTC)"
+            echo "- Channels: $(grep -c '<channel id=' epg.xml)"
+            echo "- Programmes: $(grep -c '<programme ' epg.xml)"
+            echo "- Size: \`$(du -h epg.xml | cut -f1)\` / gz \`$(du -h epg.xml.gz | cut -f1)\`"
+            echo "- XMLTV: \`https://raw.githubusercontent.com/${{ github.repository }}/data/epg.xml\`"
+            echo "- XMLTV (gz): \`https://raw.githubusercontent.com/${{ github.repository }}/data/epg.xml.gz\`"
+          } >> "$GITHUB_STEP_SUMMARY"
